@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Logs and local env
+*.log
+npm-debug.log*
+.env
+.env.*
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# Session artifacts
+Notes/
+memory/
+tasks/
+_index.md
+
+# Broker session state
+.aibroker/

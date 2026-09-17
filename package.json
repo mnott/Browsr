@@ -1,0 +1,48 @@
+{
+  "name": "@tekmidian/browsr",
+  "version": "0.1.1",
+  "description": "Browsr — browser control for agents: real Chrome tabs and DOM via an MV3 extension, a native messaging host and a stdio MCP server. Provider independent.",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "browsr": "dist/cli.js",
+    "browsr-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "extension",
+    "src/host",
+    "docs",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "chrome",
+    "browser",
+    "automation",
+    "dom",
+    "accessibility",
+    "browser-extension",
+    "browsr-mcp"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^3.2.0"
+  }
+}
