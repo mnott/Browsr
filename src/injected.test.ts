@@ -14,6 +14,7 @@ import {
   setCheckedByPath,
   pressKeyByPath,
   evalInPage,
+  readPageText,
   installConsoleHook,
   readConsole,
 } from "../extension/injected.js";
@@ -376,6 +377,43 @@ describe("evalInPage", () => {
 
   it("reports thrown errors", () => {
     expect(evalInPage("throw new Error('nope')")).toMatchObject({ ok: false, error: "nope" });
+  });
+});
+
+describe("readPageText", () => {
+  it("returns body text, title and url — with no eval anywhere in its source", () => {
+    // page_text used to ride the eval wire command, which strict-CSP sites
+    // (LinkedIn, X) block outright; the replacement reads without eval.
+    expect(readPageText.toString()).not.toContain("eval(");
+    const g = globalThis as unknown as Record<string, unknown>;
+    const prevDoc = g.document;
+    g.document = { title: "Example Domain", body: { innerText: "Example body text" } };
+    g.location = { href: "https://example.org/" };
+    try {
+      expect(readPageText()).toEqual({
+        text: "Example body text",
+        title: "Example Domain",
+        url: "https://example.org/",
+      });
+    } finally {
+      g.document = prevDoc;
+      delete g.location;
+    }
+  });
+
+  it("survives the executeScript serialization boundary: the clone reads the fake body text", () => {
+    // Chrome ships the function SOURCE and re-creates it in the page; the
+    // clone must read the body with no eval — CSP-safe by construction.
+    const clone = eval(`(${readPageText.toString()})`) as typeof readPageText;
+    const g = globalThis as unknown as Record<string, unknown>;
+    const prev = g.document;
+    g.document = { title: "Test", body: { innerText: "fake body text" } };
+    try {
+      expect(clone()).toMatchObject({ text: "fake body text", title: "Test" });
+    } finally {
+      g.document = prev;
+    }
+    expect(clone.toString()).not.toContain("eval(");
   });
 });
 

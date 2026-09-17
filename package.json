@@ -1,6 +1,6 @@
 {
   "name": "@tekmidian/browsr",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Browsr — browser control for agents: real Chrome tabs and DOM via an MV3 extension, a native messaging host and a stdio MCP server. Provider independent.",
   "type": "module",
   "main": "dist/index.js",

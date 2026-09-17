@@ -398,6 +398,20 @@ export function evalInPage(code) {
 }
 
 /**
+ * Reads the page's visible text without evaluating anything. This is the
+ * CSP-safe replacement for evalInPage("document.body.innerText"): eval in the
+ * page is blocked by strict-CSP sites (LinkedIn, X), a plain DOM read is not.
+ * Runs in the ISOLATED world — the DOM is shared, the page's JS is not.
+ */
+export function readPageText() {
+  return {
+    text: String(document.body?.innerText ?? ""),
+    title: String(document.title ?? ""),
+    url: typeof location !== "undefined" ? String(location.href) : "",
+  };
+}
+
+/**
  * Patches console.log/info/warn/error/debug in the page (MAIN world) to append
  * to a window buffer, ring-capped. Idempotent. Installed at snapshot time so
  * console_logs has something to read back on demand.

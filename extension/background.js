@@ -24,6 +24,7 @@ import {
   setCheckedByPath,
   pressKeyByPath,
   evalInPage,
+  readPageText,
   installConsoleHook,
   readConsole,
 } from "./injected.js";
@@ -39,12 +40,12 @@ const HOST_NAME = "com.browsr.bridge";
  * showed new files on disk while serving old bytes.
  */
 export const VERSION = chrome.runtime.getManifest().version;
-export const BUILD = "2026-09-18.2";
+export const BUILD = "2026-09-18.3";
 
 /** Wire commands this build answers — the version command reports this list. */
 const COMMANDS = [
   "list_tabs", "open_tab", "select_tab", "close_tab", "snapshot", "click", "type",
-  "select_option", "set_checked", "press", "eval", "screenshot", "console_logs", "version",
+  "select_option", "set_checked", "press", "page_text", "eval", "screenshot", "console_logs", "version",
 ];
 
 /** @type {chrome.runtime.Port|null} */
@@ -326,6 +327,14 @@ async function handleCommand(command, p) {
       const out = { pressed: true, key: r.key, path: r.path };
       if (p.ref !== undefined && p.ref !== null) out.ref = String(p.ref);
       return out;
+    }
+
+    case "page_text": {
+      // Injected reader, NOT eval: evaluating "document.body.innerText" in the
+      // page dies on strict-CSP sites (LinkedIn, X); a plain DOM read does not.
+      const tabId = Number(p.tabId);
+      const r = await execScript(tabId, readPageText);
+      return { text: String(r.text ?? ""), title: String(r.title ?? ""), url: String(r.url ?? "") };
     }
 
     case "eval": {

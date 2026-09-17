@@ -86,7 +86,7 @@ describe("browser MCP tool → wire command mapping", () => {
     ["dom_set_checked", { tab: 3, ref: "s6", checked: true }, "set_checked", { tabId: 3, ref: "s6", checked: true }],
     ["dom_press", { tab: 3, key: "enter", ref: "s2" }, "press", { tabId: 3, key: "enter", ref: "s2" }],
     ["dom_press", { tab: 3, key: "a" }, "press", { tabId: 3, key: "a" }],
-    ["page_text", { tab: 3 }, "eval", { tabId: 3, code: "document.body.innerText" }],
+    ["page_text", { tab: 3 }, "page_text", { tabId: 3 }],
     ["eval_js", { tab: 3, code: "1 + 1" }, "eval", { tabId: 3, code: "1 + 1" }],
     ["tab_screenshot", { tab: 3 }, "screenshot", { tabId: 3 }],
     ["console_logs", { tab: 3 }, "console_logs", { tabId: 3 }],

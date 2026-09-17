@@ -220,9 +220,11 @@ export const BROWSER_TOOLS: BrowserToolDef[] = [
     name: "page_text",
     description: "Read a tab's visible text (document.body.innerText).",
     shape: { tab: tabSchema },
-    command: "eval",
-    toParams: (a) => ({ tabId: a.tab, code: "document.body.innerText" }),
-    format: formatEval,
+    // page_text command (injected reader), NOT eval: strict-CSP sites
+    // (LinkedIn, X) block string evaluation, not plain DOM reads.
+    command: "page_text",
+    toParams: (a) => ({ tabId: a.tab }),
+    format: (result) => String(asRecord(result).text ?? ""),
   },
   {
     name: "eval_js",

@@ -133,6 +133,16 @@ Enter inside a form falls back to `form.requestSubmit()` and the result says
 which path fired. No coordinate-based input is synthesized — element-addressed
 clicks survive virtualized-list reflow, coordinate clicks do not.
 
+## Limitations
+
+- `eval_js` evaluates a *string* in the page, so a strict Content-Security-Policy
+  that forbids `unsafe-eval` blocks it — LinkedIn and X do exactly that. For
+  reading content on such sites use `dom_snapshot` instead; `page_text` is
+  CSP-safe (as of 0.1.3 it injects a plain reader function, no eval).
+- A CSP-tolerant probe library — a menu of pre-built injected functions
+  answering common queries where `eval_js` cannot go — is a possible future
+  extension.
+
 ## Troubleshooting
 
 - **"Browsr bridge not connected — start Chrome (with the Browsr extension

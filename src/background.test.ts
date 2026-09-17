@@ -109,6 +109,9 @@ function makeText(text: string): FakeElement {
 
 const html = makeEl("HTML");
 const body = makeEl("BODY");
+// What readPageText (the CSP-safe page_text path) reads back in tests.
+const bodyText = "Docs link\nsearch box";
+(body as unknown as Record<string, unknown>).innerText = bodyText;
 const anchor = makeEl("A", { href: "https://example.com/", "aria-label": "Docs link" });
 const input = makeEl("INPUT", { type: "text", placeholder: "search" });
 input.value = "";
@@ -197,7 +200,7 @@ const fakeConsole = {
 const fakeWindow: Record<string, unknown> = { console: fakeConsole };
 
 const g = globalThis as unknown as Record<string, unknown>;
-g.document = { documentElement: html, title: "Test Page" };
+g.document = { documentElement: html, title: "Test Page", body };
 g.window = fakeWindow;
 g.PointerEvent = FakePointerEvent;
 g.MouseEvent = FakeMouseEvent;
@@ -542,6 +545,28 @@ describe("scripting-based DOM handlers (fake DOM, real injected functions)", () 
     }
   });
 
+  it("reads page text through the injected reader — no eval, ISOLATED world", async () => {
+    // page_text used to be eval + "document.body.innerText" in the MAIN world,
+    // which strict-CSP sites (LinkedIn, X) block; the dedicated command injects
+    // a plain reader function instead, in the default ISOLATED world.
+    let funcSource = "";
+    let world: string | undefined;
+    const prevImpl = scriptingImpl;
+    scriptingImpl = (spec) => {
+      funcSource = spec.func.toString();
+      world = spec.world;
+      return prevImpl?.(spec);
+    };
+    try {
+      const reply = await sendCommand({ id: 21, command: "page_text", tabId: TAB });
+      expect(reply).toEqual({ id: 21, ok: true, result: { text: bodyText, title: "Test Page", url: "" } });
+      expect(funcSource).not.toContain("eval(");
+      expect(world).toBe("ISOLATED"); // plain DOM read, MAIN not needed
+    } finally {
+      scriptingImpl = prevImpl;
+    }
+  });
+
   it("screenshots via captureVisibleTab and strips the data-url prefix", async () => {
     const reply = await sendCommand({ id: 14, command: "screenshot", tabId: TAB });
     expect(reply).toEqual({ id: 14, ok: true, result: { base64: "QUJD" } });
@@ -606,7 +631,7 @@ describe("version instrumentation", () => {
     expect(reply).toMatchObject({ id: 50, ok: true, result: { version: VERSION, build: BUILD } });
     const commands = (reply.result as { commands: string[] }).commands;
     expect(commands).toEqual(expect.arrayContaining([
-      "snapshot", "click", "type", "select_option", "set_checked", "press", "eval", "version",
+      "snapshot", "click", "type", "select_option", "set_checked", "press", "page_text", "eval", "version",
     ]));
   });
 
