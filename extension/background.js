@@ -20,12 +20,32 @@ import {
   walkDom,
   clickByPath,
   typeByPath,
+  selectOptionByPath,
+  setCheckedByPath,
+  pressKeyByPath,
   evalInPage,
   installConsoleHook,
   readConsole,
 } from "./injected.js";
 
 const HOST_NAME = "com.browsr.bridge";
+
+/**
+ * Single identity for the running code. VERSION is read from the loaded
+ * manifest (chrome.runtime.getManifest().version) so the chrome://extensions
+ * card, the version command and every snapshot's first line can never drift
+ * apart; BUILD marks this working-tree state, so a live snapshot or the
+ * version command can prove WHICH code produced it — a stale service worker
+ * showed new files on disk while serving old bytes.
+ */
+export const VERSION = chrome.runtime.getManifest().version;
+export const BUILD = "2026-09-18.2";
+
+/** Wire commands this build answers — the version command reports this list. */
+const COMMANDS = [
+  "list_tabs", "open_tab", "select_tab", "close_tab", "snapshot", "click", "type",
+  "select_option", "set_checked", "press", "eval", "screenshot", "console_logs", "version",
+];
 
 /** @type {chrome.runtime.Port|null} */
 let port = null;
@@ -93,6 +113,8 @@ function onHostMessage(msg) {
     reply(id, false, undefined, "missing command key (send 'command')");
     return;
   }
+  // One line per command, name + tab only — never payloads.
+  console.log(`browsr: ${command} tab=${params.tabId ?? "-"}`);
   handleCommand(command, params)
     .then((result) => reply(id, true, result))
     .catch((e) => reply(id, false, undefined, e?.message ?? String(e)));
@@ -121,7 +143,16 @@ function execScript(tabId, func, args = [], world = "ISOLATED") {
     chrome.scripting.executeScript({ target: { tabId }, func, args, world }, (results) => {
       const e = chrome.runtime.lastError;
       if (e) reject(new Error(e.message));
-      else resolve(results?.[0]?.result);
+      else {
+        const r = results?.[0]?.result;
+        // Chrome swallows a throw inside the injected function into a null
+        // result (no lastError) — every injected command function returns an
+        // object, so null means the page-side code died. Say that instead of
+        // letting the handler crash on a null result later.
+        if (r === null || r === undefined) {
+          reject(new Error(`injected ${func?.name || "function"} threw or returned nothing — take a new snapshot and retry`));
+        } else resolve(r);
+      }
     });
   });
 }
@@ -232,7 +263,8 @@ async function handleCommand(command, p) {
       refMaps.set(tabId, map);
       // Console capture hook, installed with the snapshot (MAIN world, best effort).
       await execScript(tabId, installConsoleHook, [], "MAIN").catch(() => {});
-      return { yaml };
+      // Every snapshot self-reports which code produced it.
+      return { yaml: `- browsr ${VERSION}\n${yaml}` };
     }
 
     case "click": {
@@ -245,10 +277,55 @@ async function handleCommand(command, p) {
 
     case "type": {
       const tabId = Number(p.tabId);
+      if (p.mode !== undefined && p.mode !== null && !["append", "replace", "insert"].includes(p.mode)) {
+        throw new Error(`unknown mode '${p.mode}' (append | replace | insert)`);
+      }
       const path = resolveRefPath(tabId, String(p.ref));
-      const r = await execScript(tabId, typeByPath, [path, String(p.text)]);
+      // No mode → two-arg call, byte-identical to the historical wire format.
+      const args = p.mode === undefined || p.mode === null
+        ? [path, String(p.text)]
+        : [path, String(p.text), String(p.mode)];
+      const r = await execScript(tabId, typeByPath, args);
       if (r?.error) throw new Error(r.error);
       return { typed: true, ref: String(p.ref) };
+    }
+
+    case "select_option": {
+      const tabId = Number(p.tabId);
+      const has = (v) => v !== undefined && v !== null;
+      if (!has(p.value) && !has(p.label) && !has(p.index)) {
+        throw new Error("select_option needs one of value, label, index");
+      }
+      const path = resolveRefPath(tabId, String(p.ref));
+      const selector = { value: p.value, label: p.label, index: p.index };
+      const r = await execScript(tabId, selectOptionByPath, [path, selector]);
+      if (r?.error) throw new Error(r.error);
+      return { selected: true, ref: String(p.ref), value: r.value, label: r.label, index: r.index };
+    }
+
+    case "set_checked": {
+      const tabId = Number(p.tabId);
+      if (typeof p.checked !== "boolean") throw new Error("set_checked needs a boolean 'checked'");
+      const path = resolveRefPath(tabId, String(p.ref));
+      const r = await execScript(tabId, setCheckedByPath, [path, p.checked]);
+      if (r?.error) throw new Error(r.error);
+      const out = { set: true, ref: String(p.ref), kind: r.kind, checked: r.checked };
+      if (r.name !== undefined) out.name = r.name;
+      return out;
+    }
+
+    case "press": {
+      const tabId = Number(p.tabId);
+      if (p.key === undefined || p.key === null || String(p.key) === "") {
+        throw new Error("press needs a 'key'");
+      }
+      // No ref → the focused element gets the key.
+      const path = p.ref === undefined || p.ref === null ? null : resolveRefPath(tabId, String(p.ref));
+      const r = await execScript(tabId, pressKeyByPath, [path, String(p.key)]);
+      if (r?.error) throw new Error(r.error);
+      const out = { pressed: true, key: r.key, path: r.path };
+      if (p.ref !== undefined && p.ref !== null) out.ref = String(p.ref);
+      return out;
     }
 
     case "eval": {
@@ -282,6 +359,9 @@ async function handleCommand(command, p) {
       return { entries: r?.entries ?? [] };
     }
 
+    case "version":
+      return { version: VERSION, build: BUILD, commands: COMMANDS.slice() };
+
     default:
       throw new Error(`unknown command: ${command}`);
   }
@@ -305,6 +385,7 @@ function jsonSafe(value, depth = 0) {
 // Boot
 // ---------------------------------------------------------------------------
 
+console.log(`browsr ${VERSION} (build ${BUILD}) service worker starting`);
 connectHost();
 chrome.runtime.onStartup.addListener(connectHost);
 chrome.runtime.onInstalled.addListener(connectHost);

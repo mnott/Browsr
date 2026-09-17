@@ -14,7 +14,7 @@
  * on the default port is never touched.
  */
 
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,6 +32,18 @@ afterEach(() => {
 // own WebSocket internals, which validate instanceof Event.
 class FakePointerEvent extends Event {}
 class FakeMouseEvent extends Event {}
+// Carries the KeyboardEventInit dict as own props (the real constructor zeroes
+// legacy keyCode, which dom_press patches back onto the event).
+class FakeKeyboardEvent extends Event {
+  constructor(type: string, init?: Record<string, unknown>) {
+    super(type, init as EventInit | undefined);
+    // defineProperty, not Object.assign: bubbles/cancelable are readonly
+    // getters on Event.prototype, plain assignment throws in strict mode.
+    for (const [k, v] of Object.entries(init ?? {})) {
+      Object.defineProperty(this, k, { value: v, writable: true, configurable: true, enumerable: true });
+    }
+  }
+}
 
 interface FakeElement {
   tagName: string;
@@ -100,10 +112,79 @@ const body = makeEl("BODY");
 const anchor = makeEl("A", { href: "https://example.com/", "aria-label": "Docs link" });
 const input = makeEl("INPUT", { type: "text", placeholder: "search" });
 input.value = "";
+
+// Form fixtures for select_option / set_checked / press: live-ish state whose
+// click() toggles like the real DOM, which the handlers verify after acting.
+const opt1 = makeEl("OPTION", { value: "1" });
+const opt2 = makeEl("OPTION", { value: "2" });
+for (const [o, value, label] of [
+  [opt1, "1", "  Option 1  "],
+  [opt2, "2", "  Option 2  "],
+] as Array<[FakeElement, string, string]>) {
+  (o as unknown as Record<string, unknown>).value = value;
+  (o as unknown as Record<string, unknown>).textContent = label;
+  (o as unknown as Record<string, unknown>).selected = false;
+}
+const selectEl = makeEl("SELECT");
+selectEl.appendChild(opt1);
+selectEl.appendChild(opt2);
+// Real options reach their owning select through closest() — select_option
+// accepts an option ref (the snapshot hands out refs for options).
+for (const o of [opt1, opt2] as Array<FakeElement>) {
+  (o as unknown as Record<string, unknown>).closest = (q: string) =>
+    String(q).toLowerCase() === "select" ? selectEl : null;
+}
+(selectEl as unknown as Record<string, unknown>).options = [opt1, opt2];
+Object.defineProperty(selectEl, "value", {
+  configurable: true,
+  get: () =>
+    String(
+      ([opt1, opt2] as Array<Record<string, unknown>>).find((o) => o.selected)?.value ?? ""
+    ),
+  set: (v: string) => {
+    const opts = [opt1, opt2] as Array<Record<string, unknown>>;
+    const hit = opts.find((o) => String(o.value) === String(v));
+    for (const o of opts) o.selected = hit != null && o === hit;
+  },
+});
+
+const checkbox = makeEl("INPUT", { type: "checkbox", name: "subscribe" });
+(checkbox as unknown as Record<string, unknown>).checked = false;
+(checkbox as unknown as Record<string, unknown>).click = () => {
+  checkbox.clicked++;
+  (checkbox as unknown as Record<string, unknown>).checked =
+    !(checkbox as unknown as Record<string, unknown>).checked;
+};
+
+const radio1 = makeEl("INPUT", { type: "radio", name: "color" });
+const radio2 = makeEl("INPUT", { type: "radio", name: "color" });
+for (const [me, other] of [
+  [radio1, radio2],
+  [radio2, radio1],
+] as Array<[FakeElement, FakeElement]>) {
+  (me as unknown as Record<string, unknown>).checked = false;
+  (me as unknown as Record<string, unknown>).click = () => {
+    me.clicked++;
+    (me as unknown as Record<string, unknown>).checked = true;
+    (other as unknown as Record<string, unknown>).checked = false;
+  };
+}
+
+const formField = makeEl("INPUT", { type: "text" });
+let requestSubmits = 0;
+(formField as unknown as Record<string, unknown>).form = {
+  requestSubmit: () => requestSubmits++,
+};
+
 html.appendChild(body);
 body.appendChild(anchor);
 anchor.appendChild(makeText("Docs"));
 body.appendChild(input);
+body.appendChild(selectEl);
+body.appendChild(checkbox);
+body.appendChild(radio1);
+body.appendChild(radio2);
+body.appendChild(formField);
 
 const fakeConsole = {
   entries: [] as unknown[],
@@ -120,6 +201,7 @@ g.document = { documentElement: html, title: "Test Page" };
 g.window = fakeWindow;
 g.PointerEvent = FakePointerEvent;
 g.MouseEvent = FakeMouseEvent;
+g.KeyboardEvent = FakeKeyboardEvent;
 
 // --- chrome mock -------------------------------------------------------------------
 
@@ -167,8 +249,15 @@ function makePort(): MockPort {
 
 const listenerBags = () => ({ addListener: () => {} });
 
+// The real manifest is the source of truth; the mock serves its version so
+// background.js derives VERSION exactly as it does in Chrome.
+const manifestVersion = JSON.parse(
+  readFileSync(fileURLToPath(new URL("../extension/manifest.json", import.meta.url)), "utf8")
+) as { version: string };
+
 g.chrome = {
   runtime: {
+    getManifest: () => ({ version: manifestVersion.version }),
     connectNative: (_name: string) => {
       connectNativeAttempts++;
       if (connectNativeFailures > 0) {
@@ -217,7 +306,7 @@ g.chrome = {
 // real order: the SW module evaluates with chrome already present. The default
 // scripting impl runs the real injected functions against the fake DOM.
 scriptingImpl = (spec) => spec.func(...(spec.args || []));
-await import("../extension/background.js");
+const { VERSION, BUILD } = await import("../extension/background.js");
 
 const activePort = () => connectNativeCalls[connectNativeCalls.length - 1];
 
@@ -506,5 +595,153 @@ describe("native port reconnect", () => {
     vi.advanceTimersByTime(8_000); // 8s backoff elapses, this one succeeds
     expect(connectNativeCalls).toHaveLength(portsBefore + 1);
     errorSpy.mockRestore();
+  });
+});
+
+describe("version instrumentation", () => {
+  const TAB = 77;
+
+  it("answers the version command loudly with version, build and the command list", async () => {
+    const reply = await sendCommand({ id: 50, command: "version" });
+    expect(reply).toMatchObject({ id: 50, ok: true, result: { version: VERSION, build: BUILD } });
+    const commands = (reply.result as { commands: string[] }).commands;
+    expect(commands).toEqual(expect.arrayContaining([
+      "snapshot", "click", "type", "select_option", "set_checked", "press", "eval", "version",
+    ]));
+  });
+
+  it("every dom_snapshot self-reports the code version as its first line", async () => {
+    const reply = await sendCommand({ id: 51, command: "snapshot", tabId: TAB });
+    expect(reply.ok).toBe(true);
+    const yaml = (reply.result as { yaml: string }).yaml;
+    expect(yaml.split("\n")[0]).toBe(`- browsr ${VERSION}`);
+  });
+
+  it("VERSION derives from the manifest — extension card, version tool and snapshots cannot drift", async () => {
+    const manifest = JSON.parse(
+      readFileSync(fileURLToPath(new URL("../extension/manifest.json", import.meta.url)), "utf8")
+    ) as { version: string };
+    expect(VERSION).toBe(manifest.version);
+  });
+});
+
+describe("interaction handlers (select_option / set_checked / press / type mode)", () => {
+  const TAB = 77;
+  // Ref layout after a snapshot, in DOM order: s1 anchor, s2 input,
+  // s3 select, s4/s5 options, s6 checkbox, s7/s8 radios, s9 form field.
+
+  beforeEach(async () => {
+    const reply = await sendCommand({ id: 900, command: "snapshot", tabId: TAB });
+    expect(reply.ok).toBe(true);
+  });
+
+  it("select_option by value selects, fires input+change, reports value/label/index", async () => {
+    selectEl.events.length = 0;
+    const reply = await sendCommand({ id: 31, command: "select_option", tabId: TAB, ref: "s3", value: "2" });
+    expect(reply).toMatchObject({
+      id: 31,
+      ok: true,
+      result: { selected: true, ref: "s3", value: "2", label: "Option 2", index: 1 },
+    });
+    expect(selectEl.events.map((e) => e.type)).toEqual(["input", "change"]);
+    expect((opt2 as unknown as Record<string, unknown>).selected).toBe(true);
+    expect((opt1 as unknown as Record<string, unknown>).selected).toBe(false);
+  });
+
+  it("select_option by label and by index work too", async () => {
+    expect(
+      await sendCommand({ id: 32, command: "select_option", tabId: TAB, ref: "s3", label: "Option 1" })
+    ).toMatchObject({ ok: true, result: { value: "1", index: 0 } });
+    expect(
+      await sendCommand({ id: 33, command: "select_option", tabId: TAB, ref: "s3", index: 1 })
+    ).toMatchObject({ ok: true, result: { value: "2" } });
+  });
+
+  it("set_checked checks a checkbox with one click and reports the state", async () => {
+    const reply = await sendCommand({ id: 34, command: "set_checked", tabId: TAB, ref: "s6", checked: true });
+    expect(reply).toMatchObject({
+      id: 34,
+      ok: true,
+      result: { set: true, ref: "s6", kind: "checkbox", checked: true, name: "subscribe" },
+    });
+    expect(checkbox.clicked).toBe(1);
+  });
+
+  it("set_checked selects a radio, deselecting its sibling", async () => {
+    const reply = await sendCommand({ id: 35, command: "set_checked", tabId: TAB, ref: "s8", checked: true });
+    expect(reply).toMatchObject({ id: 35, ok: true, result: { set: true, kind: "radio", checked: true } });
+    expect((radio2 as unknown as Record<string, unknown>).checked).toBe(true);
+    expect((radio1 as unknown as Record<string, unknown>).checked).toBe(false);
+  });
+
+  it("press Enter on a field inside a form falls back to requestSubmit", async () => {
+    const before = requestSubmits;
+    const reply = await sendCommand({ id: 36, command: "press", tabId: TAB, ref: "s9", key: "enter" });
+    expect(reply).toMatchObject({
+      id: 36,
+      ok: true,
+      result: { pressed: true, ref: "s9", key: "Enter", path: "requestSubmit" },
+    });
+    expect(requestSubmits).toBe(before + 1);
+    expect(formField.events.map((e) => e.type)).toEqual(["keydown", "keypress", "keyup"]);
+  });
+
+  it("type with mode replace reaches the injected function (overwrite)", async () => {
+    input.events.length = 0;
+    input.value = "old text";
+    const reply = await sendCommand({ id: 37, command: "type", tabId: TAB, ref: "s2", text: "new", mode: "replace" });
+    expect(reply).toMatchObject({ id: 37, ok: true, result: { typed: true, ref: "s2" } });
+    expect(input.value).toBe("new"); // replaced, not appended
+    expect(input.events.map((e) => e.type)).toEqual(["input", "change"]);
+  });
+
+  it("select_option accepts an OPTION ref (resolves to the owning select)", async () => {
+    // Live regression: /dropdown answered "element is not a native <select>"
+    // because the caller passed an option's ref, the only labeled thing in view.
+    selectEl.events.length = 0;
+    const reply = await sendCommand({ id: 42, command: "select_option", tabId: TAB, ref: "s5", label: "Option 2" });
+    expect(reply).toMatchObject({
+      id: 42,
+      ok: true,
+      result: { selected: true, ref: "s5", value: "2", label: "Option 2", index: 1 },
+    });
+    expect((opt2 as unknown as Record<string, unknown>).selected).toBe(true);
+    expect((opt1 as unknown as Record<string, unknown>).selected).toBe(false);
+  });
+
+  it("set_checked reports a loud error when the injected function throws (no null crash)", async () => {
+    // Chrome swallows a throw inside executeScript into result:null — the
+    // handler must say so instead of crashing on r.kind ("reading 'kind'").
+    const prev = scriptingImpl;
+    scriptingImpl = () => {
+      throw new Error("page exploded");
+    };
+    try {
+      const reply = await sendCommand({ id: 43, command: "set_checked", tabId: TAB, ref: "s6", checked: true });
+      expect(reply.ok).toBe(false);
+      expect(String(reply.error)).toMatch(/injected .* threw|returned nothing/);
+      expect(String(reply.error)).not.toMatch(/reading 'kind'/);
+    } finally {
+      scriptingImpl = prev;
+    }
+  });
+
+  it("missing/invalid params fail loudly", async () => {
+    expect(await sendCommand({ id: 38, command: "select_option", tabId: TAB, ref: "s3" })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("select_option needs one of value, label, index"),
+    });
+    expect(await sendCommand({ id: 39, command: "press", tabId: TAB, ref: "s9" })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("press needs a 'key'"),
+    });
+    expect(await sendCommand({ id: 40, command: "set_checked", tabId: TAB, ref: "s6", checked: "yes" })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("set_checked needs a boolean 'checked'"),
+    });
+    expect(await sendCommand({ id: 41, command: "type", tabId: TAB, ref: "s2", text: "x", mode: "bogus" })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("unknown mode 'bogus'"),
+    });
   });
 });

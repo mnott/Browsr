@@ -172,7 +172,7 @@ function accessibleName(node, role, interactive = false) {
   if (attrs.name) return cleanName(attrs.name);
   if (attrs.placeholder) return cleanName(attrs.placeholder);
   if (attrs.value !== undefined && attrs.value !== null && String(attrs.value) !== "" &&
-      String(node.nodeName).toLowerCase() === "input") {
+      role === "textbox") {
     return cleanName(attrs.value);
   }
   if (attrs.text) return cleanName(attrs.text);
@@ -221,6 +221,24 @@ export function buildSnapshot(domNodeTree) {
       const ref = `s${++counter}`;
       refMap[ref] = node.nodeId;
       parts.push(`ref=${ref}`);
+    }
+    // Live state parts, always after ref= (existing [ref= prefixes stay
+    // stable): checkboxes/radios show checked= (radios also their group name,
+    // so same-named siblings are distinguishable), options selected= (+ value=),
+    // textboxes their current value — so the model can both pick and verify.
+    // The attrs come from walkDom's live property reads — the attributes
+    // alone hold only initial state.
+    if (role === "checkbox" || role === "radio" || role === "switch") {
+      const live = attrs.checked ?? attrs["aria-checked"];
+      parts.push(`checked=${live === "true" || live === true}`);
+      if (role === "radio" && attrs.name) parts.push(`group=${cleanName(attrs.name)}`);
+    } else if (role === "option") {
+      if (attrs.value !== undefined && attrs.value !== null) parts.push(`value=${attrs.value}`);
+      const selected = attrs.selected ?? attrs["aria-selected"];
+      parts.push(`selected=${selected === "true" || selected === true}`);
+    } else if (role === "textbox") {
+      // The live value proves what a dom_type actually landed in the field.
+      if (typeof attrs.value === "string" && attrs.value !== "") parts.push(`value=${cleanName(attrs.value)}`);
     }
     lines.push("  ".repeat(depth) + label + (parts.length ? ` [${parts.join(" ")}]` : ""));
     for (const child of node.children || []) render(child, depth + 1);

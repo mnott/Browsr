@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Browsr",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Lets agents drive the real running Chrome: tabs and DOM over native messaging. No remote debugging port, no debugger banner, provider independent.",
   "background": {
     "service_worker": "background.js",

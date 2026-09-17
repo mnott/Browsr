@@ -49,8 +49,9 @@ async function connectedPair(bridge: { send: (c: string, p?: Record<string, unkn
 // ---------------------------------------------------------------------------
 
 describe("browser MCP tool → wire command mapping", () => {
-  it("exposes exactly the 11 tools", () => {
+  it("exposes exactly the 15 tools", () => {
     expect(BROWSER_TOOLS.map((t) => t.name)).toEqual([
+      "browsr_version",
       "tabs_list",
       "tab_open",
       "tab_select",
@@ -58,6 +59,9 @@ describe("browser MCP tool → wire command mapping", () => {
       "dom_snapshot",
       "dom_click",
       "dom_type",
+      "dom_select_option",
+      "dom_set_checked",
+      "dom_press",
       "page_text",
       "eval_js",
       "tab_screenshot",
@@ -66,6 +70,7 @@ describe("browser MCP tool → wire command mapping", () => {
   });
 
   const cases: Array<[string, Record<string, unknown>, string, Record<string, unknown>]> = [
+    ["browsr_version", {}, "version", {}],
     ["tabs_list", {}, "list_tabs", {}],
     ["tab_open", { url: "https://example.org", active: false }, "open_tab", { url: "https://example.org", active: false }],
     ["tab_open", { url: "https://example.org" }, "open_tab", { url: "https://example.org" }],
@@ -74,6 +79,13 @@ describe("browser MCP tool → wire command mapping", () => {
     ["dom_snapshot", { tab: 3 }, "snapshot", { tabId: 3 }],
     ["dom_click", { tab: 3, ref: "s5" }, "click", { tabId: 3, ref: "s5" }],
     ["dom_type", { tab: 3, ref: "s5", text: "hello" }, "type", { tabId: 3, ref: "s5", text: "hello" }],
+    ["dom_type", { tab: 3, ref: "s5", text: "hello", mode: "replace" }, "type", { tabId: 3, ref: "s5", text: "hello", mode: "replace" }],
+    ["dom_select_option", { tab: 3, ref: "s5", value: "2" }, "select_option", { tabId: 3, ref: "s5", value: "2" }],
+    ["dom_select_option", { tab: 3, ref: "s5", label: "Option 2" }, "select_option", { tabId: 3, ref: "s5", label: "Option 2" }],
+    ["dom_select_option", { tab: 3, ref: "s5", index: 1 }, "select_option", { tabId: 3, ref: "s5", index: 1 }],
+    ["dom_set_checked", { tab: 3, ref: "s6", checked: true }, "set_checked", { tabId: 3, ref: "s6", checked: true }],
+    ["dom_press", { tab: 3, key: "enter", ref: "s2" }, "press", { tabId: 3, key: "enter", ref: "s2" }],
+    ["dom_press", { tab: 3, key: "a" }, "press", { tabId: 3, key: "a" }],
     ["page_text", { tab: 3 }, "eval", { tabId: 3, code: "document.body.innerText" }],
     ["eval_js", { tab: 3, code: "1 + 1" }, "eval", { tabId: 3, code: "1 + 1" }],
     ["tab_screenshot", { tab: 3 }, "screenshot", { tabId: 3 }],
@@ -105,6 +117,9 @@ describe("browser MCP tool → wire command mapping", () => {
       "dom_snapshot",
       "dom_click",
       "dom_type",
+      "dom_select_option",
+      "dom_set_checked",
+      "dom_press",
       "page_text",
       "eval_js",
       "tab_screenshot",
@@ -115,6 +130,8 @@ describe("browser MCP tool → wire command mapping", () => {
       if ("ref" in def.shape) args.ref = "s1";
       if ("text" in def.shape) args.text = "x";
       if ("code" in def.shape) args.code = "1";
+      if ("checked" in def.shape) args.checked = true;
+      if ("key" in def.shape) args.key = "enter";
       const send = vi.fn().mockResolvedValue({});
       await runBrowserTool(def, args, { send });
       expect(send.mock.calls[0][1], def.name).toMatchObject({ tabId: 42 });

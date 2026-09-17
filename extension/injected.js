@@ -22,8 +22,13 @@
 export function walkDom() {
   const KEEP_ATTRS = new Set([
     "role", "aria-label", "name", "id", "placeholder", "href", "type", "value", "tabindex", "title", "alt",
+    "aria-checked", "aria-selected",
   ]);
   const SKIP_TAGS = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "LINK", "META", "HEAD"]);
+  // Inlined on purpose (executeScript serializes function source only): the
+  // input types whose live .value is typed text. Checkbox/radio/button values
+  // are form payloads, not user text — they stay out of the snapshot.
+  const TEXT_ENTRY_TYPES = new Set(["", "text", "search", "email", "url", "tel", "password", "number"]);
   let nextId = 1;
   const paths = {};
 
@@ -31,6 +36,22 @@ export function walkDom() {
     const out = {};
     for (const a of el.attributes || []) {
       if (KEEP_ATTRS.has(a.name)) out[a.name] = a.value;
+    }
+    // Live properties, not just attributes: the checked/selected attributes
+    // hold only the INITIAL state, not what the user did since. Same for
+    // option values — the attribute is often absent while the property
+    // defaults to the option text — and for typed field values, which never
+    // reach the value attribute at all.
+    if (el.checked !== undefined) out.checked = String(!!el.checked);
+    if (el.selected !== undefined) out.selected = String(!!el.selected);
+    const tag = String(el.tagName || "").toUpperCase();
+    if (tag === "OPTION" && typeof el.value === "string") {
+      out.value = el.value;
+    }
+    const inputType = String(el.type ?? out.type ?? "").toLowerCase(); // property, else attribute
+    if (typeof el.value === "string" && el.value !== "" &&
+        (tag === "TEXTAREA" || (tag === "INPUT" && TEXT_ENTRY_TYPES.has(inputType)))) {
+      out.value = el.value;
     }
     return out;
   };
@@ -108,11 +129,16 @@ export function clickByPath(path) {
 
 /**
  * Types text into the element at a snapshot path. Form fields get the value
- * appended through the native setter (so framework listeners see it) plus
+ * set through the native setter (so framework listeners see it) plus
  * input/change events; contenteditable elements (and anything caret-oriented)
  * get document.execCommand("insertText") at the caret.
+ *
+ * mode: "append" (default — byte-identical to the historical behaviour),
+ * "replace" (clear the field first / select all contenteditable contents so
+ * the final value is exactly `text`), or "insert" (insert at the caret; on a
+ * field that equals append, because value properties have no caret).
  */
-export function typeByPath(path, text) {
+export function typeByPath(path, text, mode) {
   let el = document.documentElement;
   if (!el) return { typed: false, error: "stale ref — take a new snapshot" };
   for (const i of path) {
@@ -121,21 +147,236 @@ export function typeByPath(path, text) {
     el = next;
   }
   if (el.nodeType !== 1) return { typed: false, error: "stale ref — take a new snapshot" };
+  const m = mode === undefined || mode === null ? "append" : String(mode);
+  if (m !== "append" && m !== "replace" && m !== "insert") {
+    return { typed: false, error: `unknown mode '${m}' (append | replace | insert)` };
+  }
   el.scrollIntoView({ block: "center", inline: "center" });
   if (typeof el.focus === "function") el.focus();
   if (typeof el.value === "string") {
     const proto = Object.getPrototypeOf(el) || {};
     const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-    if (setter) setter.call(el, el.value + text);
-    else el.value = el.value + text;
+    const setVal = (v) => (setter ? setter.call(el, v) : (el.value = v));
+    if (m === "replace") setVal(""); // clear first; one input+change pair follows
+    setVal(el.value + text);
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
     return { typed: true };
   }
-  if (el.isContentEditable && typeof document.execCommand === "function") {
-    if (document.execCommand("insertText", false, text)) return { typed: true };
+  if (el.isContentEditable) {
+    if (typeof document.execCommand !== "function") {
+      return { typed: false, error: "document.execCommand is unavailable — cannot type into this contenteditable element" };
+    }
+    if (m === "replace") {
+      // Select all contents; insertText over an active selection replaces it.
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const selection = document.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    if (!document.execCommand("insertText", false, text)) {
+      return { typed: false, error: 'execCommand("insertText") returned false — text was not inserted' };
+    }
+    return { typed: true };
   }
   return { typed: false, error: "element is not typable (no value property, not contenteditable)" };
+}
+
+/**
+ * Picks an option in a native <select> at a snapshot path. selector is
+ * { value?, label?, index? } — exactly one used; if several are given,
+ * value wins over label over index. Sets the value through the native setter
+ * and fires input + change. Custom ARIA listbox/combobox widgets are not
+ * supported (v1 scope): the error says so and points at click flows.
+ */
+export function selectOptionByPath(path, selector) {
+  let el = document.documentElement;
+  if (!el) return { selected: false, error: "stale ref — take a new snapshot" };
+  for (const i of path) {
+    const next = el.children[i];
+    if (!next) return { selected: false, error: "stale ref — take a new snapshot" };
+    el = next;
+  }
+  if (String(el.tagName || "").toUpperCase() !== "SELECT") {
+    // The snapshot hands out refs for options (often the only labeled thing
+    // in a select), so an option ref is as good as the select's own ref —
+    // resolve the owning select. Anything else really is not a native select.
+    const owner = typeof el.closest === "function" ? el.closest("select") : null;
+    if (owner && String(owner.tagName || "").toUpperCase() === "SELECT") el = owner;
+    else {
+      return {
+        selected: false,
+        error: "element is not a native <select> — custom ARIA listbox/combobox widgets are not supported by this tool; use dom_click on the widget's options instead",
+      };
+    }
+  }
+  const sel = selector && typeof selector === "object" ? selector : {};
+  const norm = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
+  const options = el.options || [];
+  const has = (v) => v !== undefined && v !== null;
+  let opt = null;
+  let idx = -1;
+  if (has(sel.value)) {
+    for (let i = 0; i < options.length; i++) {
+      if (String(options[i].value) === String(sel.value)) { opt = options[i]; idx = i; break; }
+    }
+  } else if (has(sel.label)) {
+    for (let i = 0; i < options.length; i++) {
+      if (norm(options[i].textContent) === String(sel.label)) { opt = options[i]; idx = i; break; }
+    }
+  } else if (has(sel.index)) {
+    const i = Number(sel.index);
+    if (Number.isInteger(i) && i >= 0 && i < options.length) { opt = options[i]; idx = i; }
+  }
+  if (!opt) {
+    const given = has(sel.value) ? `value='${sel.value}'`
+      : has(sel.label) ? `label='${sel.label}'`
+      : has(sel.index) ? `index='${sel.index}'`
+      : "no value/label/index given";
+    const list = Array.prototype.slice.call(options, 0, 20)
+      .map((o) => `value=${o.value} label=${norm(o.textContent)}`)
+      .join("; ");
+    return { selected: false, error: `no option matches ${given}; available options: ${list || "(none)"}` };
+  }
+  const proto = Object.getPrototypeOf(el) || {};
+  const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+  if (setter) setter.call(el, opt.value);
+  else el.value = opt.value;
+  try { opt.selected = true; } catch (e) { /* real DOM sets it via value already */ }
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  return { selected: true, value: String(opt.value), label: norm(opt.textContent), index: idx };
+}
+
+/**
+ * Sets the checked state of a checkbox or radio at a snapshot path. A real
+ * click both flips the property AND runs the page's own handlers, so the
+ * click only happens when the state actually differs — and the state is
+ * verified after. Radios cannot be unchecked; the error says what to do.
+ */
+export function setCheckedByPath(path, checked) {
+  let el = document.documentElement;
+  if (!el) return { set: false, error: "stale ref — take a new snapshot" };
+  for (const i of path) {
+    const next = el.children[i];
+    if (!next) return { set: false, error: "stale ref — take a new snapshot" };
+    el = next;
+  }
+  if (el.nodeType !== 1) return { set: false, error: "stale ref — take a new snapshot" };
+  // getAttribute, not attributes.find: NamedNodeMap is iterable but carries no
+  // array methods, and .find on it throws inside the page (Chrome then swallows
+  // the throw into a null result and the handler crashed on it).
+  const getAttr = (node, name) =>
+    typeof node.getAttribute === "function"
+      ? node.getAttribute(name)
+      : (node.attributes || []).find((a) => a.name === name)?.value;
+  const kind = String(el.type ?? getAttr(el, "type") ?? "").toLowerCase();
+  const want = !!checked;
+  const nameOf = (node) => getAttr(node, "name");
+  if (kind !== "checkbox" && kind !== "radio") {
+    return { set: false, error: `element is not a checkbox or radio (type '${kind || "none"}')` };
+  }
+  el.scrollIntoView({ block: "center", inline: "center" });
+  if (kind === "radio") {
+    if (!want) {
+      return { set: false, error: "radio buttons cannot be unchecked — pick a different radio in the group or reload" };
+    }
+    if (!el.checked) {
+      el.click();
+      if (!el.checked) return { set: false, error: "radio state did not change after click" };
+    }
+    return { set: true, kind, checked: !!el.checked, ...(nameOf(el) != null ? { name: nameOf(el) } : {}) };
+  }
+  if (el.checked !== want) {
+    el.click();
+    if (el.checked !== want) return { set: false, error: "checkbox state did not change after click" };
+  }
+  return { set: true, kind, checked: !!el.checked, ...(nameOf(el) != null ? { name: nameOf(el) } : {}) };
+}
+
+/**
+ * Presses a key at the element for a snapshot path (or the focused element
+ * when path is null): keydown, then keypress for printables + Enter, then
+ * keyup — all cancelable and bubbling. Synthesized key events never trigger
+ * browser default actions, so for an uncancelled Enter inside a reachable
+ * form the function falls back to form.requestSubmit() and reports which
+ * path fired ("requestSubmit" vs "keys").
+ */
+export function pressKeyByPath(path, key) {
+  // Inlined on purpose: this function crosses the executeScript serialization
+  // boundary as source only — no module-level constants come along.
+  const KEY_MAP = {
+    enter: { key: "Enter", code: "Enter", keyCode: 13 },
+    tab: { key: "Tab", code: "Tab", keyCode: 9 },
+    escape: { key: "Escape", code: "Escape", keyCode: 27 },
+    backspace: { key: "Backspace", code: "Backspace", keyCode: 8 },
+    delete: { key: "Delete", code: "Delete", keyCode: 46 },
+    arrowup: { key: "ArrowUp", code: "ArrowUp", keyCode: 38 },
+    arrowdown: { key: "ArrowDown", code: "ArrowDown", keyCode: 40 },
+    arrowleft: { key: "ArrowLeft", code: "ArrowLeft", keyCode: 37 },
+    arrowright: { key: "ArrowRight", code: "ArrowRight", keyCode: 39 },
+    home: { key: "Home", code: "Home", keyCode: 36 },
+    end: { key: "End", code: "End", keyCode: 35 },
+    pageup: { key: "PageUp", code: "PageUp", keyCode: 33 },
+    pagedown: { key: "PageDown", code: "PageDown", keyCode: 34 },
+    space: { key: " ", code: "Space", keyCode: 32 },
+  };
+  const KEY_NAMES = "enter, tab, escape, backspace, delete, arrowup, arrowdown, arrowleft, arrowright, home, end, pageup, pagedown, space, or any single character";
+  const name = String(key ?? "").toLowerCase();
+  let spec = KEY_MAP[name];
+  if (!spec && String(key).length === 1) {
+    const c = String(key);
+    if (c === " ") spec = KEY_MAP.space;
+    else {
+      const upper = c.toUpperCase();
+      spec = { key: c, code: /[a-z]/i.test(c) ? "Key" + upper : "Digit" + c, keyCode: upper.charCodeAt(0) };
+    }
+  }
+  if (!spec) return { pressed: false, error: `unsupported key '${key}' — supported: ${KEY_NAMES}` };
+
+  let el;
+  if (path) {
+    el = document.documentElement;
+    if (!el) return { pressed: false, error: "stale ref — take a new snapshot" };
+    for (const i of path) {
+      const next = el.children[i];
+      if (!next) return { pressed: false, error: "stale ref — take a new snapshot" };
+      el = next;
+    }
+    if (el.nodeType !== 1) return { pressed: false, error: "stale ref — take a new snapshot" };
+  } else {
+    el = document.activeElement || document.body;
+  }
+  if (!el || el.nodeType !== 1) {
+    return { pressed: false, error: "no element to press on (no ref given, nothing focused)" };
+  }
+  if (typeof el.focus === "function") el.focus();
+  const fire = (type) => {
+    const ev = new KeyboardEvent(type, {
+      key: spec.key, code: spec.code, keyCode: spec.keyCode, bubbles: true, cancelable: true,
+    });
+    // KeyboardEventInit has no keyCode (legacy) and Chrome zeroes it — patch
+    // it so legacy key handlers see the real code.
+    try {
+      Object.defineProperty(ev, "keyCode", { get: () => spec.keyCode });
+      Object.defineProperty(ev, "which", { get: () => spec.keyCode });
+    } catch (e) { /* non-configurable somewhere — best effort */ }
+    el.dispatchEvent(ev);
+    return ev;
+  };
+  const keydown = fire("keydown");
+  const printable = spec.key.length === 1 || spec.key === "Enter";
+  if (printable) fire("keypress");
+  fire("keyup");
+  if (spec.key === "Enter" && !keydown.defaultPrevented) {
+    const form = el.form || (typeof el.closest === "function" ? el.closest("form") : null);
+    if (form && typeof form.requestSubmit === "function") {
+      form.requestSubmit();
+      return { pressed: true, key: spec.key, path: "requestSubmit" };
+    }
+  }
+  return { pressed: true, key: spec.key, path: "keys" };
 }
 
 /**

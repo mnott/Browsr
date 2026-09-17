@@ -82,6 +82,15 @@ function formatScreenshot(result: unknown): string {
 
 export const BROWSER_TOOLS: BrowserToolDef[] = [
   {
+    name: "browsr_version",
+    description:
+      "Report the running extension's version, build and the wire commands it answers. " +
+      "Every dom_snapshot's first line carries the same version, so a snapshot always shows which code produced it.",
+    shape: {},
+    command: "version",
+    toParams: () => ({}),
+  },
+  {
     name: "tabs_list",
     description: "List the tabs of the user's real running Chrome (id, title, url, active).",
     shape: {},
@@ -134,14 +143,78 @@ export const BROWSER_TOOLS: BrowserToolDef[] = [
   {
     name: "dom_type",
     description:
-      "Focus an element by its [ref=sN] and type text into it (inserts at the caret, works in SPAs).",
+      "Focus an element by its [ref=sN] and type text into it (inserts at the caret, works in SPAs). " +
+      "mode 'append' (default) adds to existing text; 'replace' clears the field (or selects all contenteditable " +
+      "content) first, so the final value is exactly the typed text; 'insert' inserts at the caret, which on a " +
+      "field equals append — value properties have no caret.",
     shape: {
       tab: tabSchema,
       ref: z.string().describe("Ref id from dom_snapshot, e.g. s5."),
       text: z.string().describe("Text to type."),
+      mode: z.enum(["append", "replace", "insert"]).optional().describe("append (default), replace, or insert."),
     },
     command: "type",
-    toParams: (a) => ({ tabId: a.tab, ref: a.ref, text: a.text }),
+    toParams: (a) => ({
+      tabId: a.tab,
+      ref: a.ref,
+      text: a.text,
+      ...(a.mode !== undefined ? { mode: a.mode } : {}),
+    }),
+  },
+  {
+    name: "dom_select_option",
+    description:
+      "Pick an option in a native <select>, matching by option value, label, or index " +
+      "(exactly one; if several are given, value wins over label over index). Accepts the <select>'s own " +
+      "[ref=sN] or any of its option refs. The snapshot shows each option's value= and selected= state. " +
+      "Custom ARIA listbox/combobox widgets are NOT supported — those need dom_click on their options. " +
+      "Multi-selects set the value / first match only.",
+    shape: {
+      tab: tabSchema,
+      ref: z.string().describe("Ref id of the <select> or of one of its options, from dom_snapshot."),
+      value: z.string().optional().describe("Option value to select."),
+      label: z.string().optional().describe("Option label (trimmed visible text) to select."),
+      index: z.number().int().optional().describe("Option index, 0-based."),
+    },
+    command: "select_option",
+    toParams: (a) => ({
+      tabId: a.tab,
+      ref: a.ref,
+      ...(a.value !== undefined ? { value: a.value } : {}),
+      ...(a.label !== undefined ? { label: a.label } : {}),
+      ...(a.index !== undefined ? { index: a.index } : {}),
+    }),
+  },
+  {
+    name: "dom_set_checked",
+    description:
+      "Set a checkbox or radio to checked=true/false by its [ref=sN]: clicks only when the current state " +
+      "differs, then verifies the state and returns it. Radios cannot be unchecked — pick a different radio in " +
+      "the group instead. The snapshot shows the live checked= state for verification.",
+    shape: {
+      tab: tabSchema,
+      ref: z.string().describe("Ref id from dom_snapshot, e.g. s3."),
+      checked: z.boolean().describe("Target state."),
+    },
+    command: "set_checked",
+    toParams: (a) => ({ tabId: a.tab, ref: a.ref, checked: a.checked }),
+  },
+  {
+    name: "dom_press",
+    description:
+      "Press a key at the element for a [ref=sN], or at the focused element when no ref is given: dispatches " +
+      "keydown, keypress (printables + Enter), keyup. Supported keys: enter, tab, escape, backspace, delete, " +
+      "arrowup, arrowdown, arrowleft, arrowright, home, end, pageup, pagedown, space, or any single character. " +
+      "Honest limitation: synthesized key events never trigger browser default actions (no native submit-on-Enter, " +
+      "caret movement, or shortcut activation) — for an uncancelled Enter inside a reachable form the tool falls " +
+      "back to form.requestSubmit() and reports path='requestSubmit'; path='keys' means only the events fired.",
+    shape: {
+      tab: tabSchema,
+      key: z.string().describe("Key name (enter, tab, ...) or a single character."),
+      ref: z.string().optional().describe("Ref id from dom_snapshot; defaults to the focused element."),
+    },
+    command: "press",
+    toParams: (a) => ({ tabId: a.tab, key: a.key, ...(a.ref !== undefined ? { ref: a.ref } : {}) }),
   },
   {
     name: "page_text",

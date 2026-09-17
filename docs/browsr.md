@@ -79,17 +79,21 @@ worker's idle timer.
 
 ## Usage
 
-Eleven tools, all named after what they do:
+Fifteen tools, all named after what they do:
 
 | Tool | What it does |
 |------|--------------|
+| `browsr_version` | Version + build of the running extension and its wire commands |
 | `tabs_list` | List tabs: id, title, url, active |
 | `tab_open {url, active?}` | Open a tab |
 | `tab_select {tab}` | Bring a tab to the front |
 | `tab_close {tab}` | Close a tab |
-| `dom_snapshot {tab}` | A11y-tree YAML of the page, with `[ref=sN]` ids |
+| `dom_snapshot {tab}` | A11y-tree YAML of the page, with `[ref=sN]` ids and live state (`checked=`, `group=`, `selected=`, `value=`) |
 | `dom_click {tab, ref}` | Click an element (scrolls into view first) |
-| `dom_type {tab, ref, text}` | Focus an element and type into it |
+| `dom_type {tab, ref, text, mode?}` | Focus an element and type into it; `mode: "replace"` overwrites |
+| `dom_select_option {tab, ref, value?/label?/index?}` | Pick an option in a native `<select>` (its ref or any option ref) |
+| `dom_set_checked {tab, ref, checked}` | Set a checkbox/radio state (clicks only when it differs) |
+| `dom_press {tab, key, ref?}` | Press a key (Enter falls back to `form.requestSubmit`) |
 | `page_text {tab}` | Read `document.body.innerText` |
 | `eval_js {tab, code}` | Evaluate JavaScript (awaits promises) |
 | `tab_screenshot {tab}` | PNG screenshot of the visible tab, base64 |
@@ -119,9 +123,15 @@ unknown ref returns `unknown ref sN — take a new snapshot`.
 Clicks scroll the element into view first and fire the element's own click
 (a dispatched pointer-event fallback covers custom elements); typing goes
 through the native value setter plus `input`/`change` events, so framework
-listeners see it, and contenteditable fields get `insertText` at the caret.
-No coordinate-based input is synthesized — element-addressed clicks survive
-virtualized-list reflow, coordinate clicks do not.
+listeners see it, and contenteditable fields get `insertText` at the caret
+(`mode: "replace"` clears/selects-all first to overwrite). Selects are set
+through the native value setter with `input` + `change`; checkboxes and
+radios are clicked only when their state differs, then verified. Key presses
+dispatch keydown/keypress/keyup with real `key`/`code`/`keyCode` — but
+synthesized keys never trigger browser default actions, so an uncancelled
+Enter inside a form falls back to `form.requestSubmit()` and the result says
+which path fired. No coordinate-based input is synthesized — element-addressed
+clicks survive virtualized-list reflow, coordinate clicks do not.
 
 ## Troubleshooting
 

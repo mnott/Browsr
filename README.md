@@ -39,13 +39,17 @@ Full walkthrough and troubleshooting: [docs/browsr.md](docs/browsr.md).
 
 | Tool | What it does |
 |------|--------------|
+| `browsr_version` | Version + build of the running extension and its wire commands |
 | `tabs_list` | List tabs: id, title, url, active |
 | `tab_open {url, active?}` | Open a tab |
 | `tab_select {tab}` | Bring a tab to the front |
 | `tab_close {tab}` | Close a tab |
 | `dom_snapshot {tab}` | A11y-tree YAML of the page, with `[ref=sN]` ids |
 | `dom_click {tab, ref}` | Click an element (scrolls into view first) |
-| `dom_type {tab, ref, text}` | Focus an element and type into it |
+| `dom_type {tab, ref, text, mode?}` | Focus an element and type into it; `mode: "replace"` overwrites |
+| `dom_select_option {tab, ref, value?/label?/index?}` | Pick an option in a native `<select>` (its ref or any option ref) |
+| `dom_set_checked {tab, ref, checked}` | Set a checkbox/radio state (clicks only when it differs) |
+| `dom_press {tab, key, ref?}` | Press a key (Enter falls back to `form.requestSubmit`) |
 | `page_text {tab}` | Read `document.body.innerText` |
 | `eval_js {tab, code}` | Evaluate JavaScript (awaits promises) |
 | `tab_screenshot {tab}` | PNG screenshot of the visible tab, base64 |

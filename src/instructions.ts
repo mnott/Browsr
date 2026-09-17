@@ -11,7 +11,7 @@
  * because those are fetched on demand while this text is loaded in every
  * session.
  */
-export const INSTRUCTIONS = `browsr drives the user's real running Chrome — the one with their logged-in sessions, cookies and extensions. It lists tabs, snapshots a page's DOM as an accessibility tree, clicks, types, reads text, evaluates JavaScript, screenshots and reads console output. Chrome must be running with the browsr extension loaded; when it is not, every tool returns a clear "start Chrome" error and the server reconnects on the next call, so fixing Chrome is enough.
+export const INSTRUCTIONS = `browsr drives the user's real running Chrome — the one with their logged-in sessions, cookies and extensions. It lists tabs, snapshots a page's DOM as an accessibility tree, clicks, types (append or overwrite), selects options in native dropdowns, sets checkboxes and radios, presses keys, reads text, evaluates JavaScript, screenshots and reads console output. Chrome must be running with the browsr extension loaded; when it is not, every tool returns a clear "start Chrome" error and the server reconnects on the next call, so fixing Chrome is enough.
 
 ## Routing: browsr or the screen tool?
 
@@ -19,9 +19,9 @@ Anything inside a web page belongs to browsr: tabs, page content, form fields, b
 
 ## The ref workflow
 
-DOM interaction goes through snapshot refs. Take dom_snapshot first: it returns a11y-tree YAML in which every interactive element carries a [ref=sN] id. Pass that ref to dom_click or dom_type. Never guess a ref, and never reuse a ref across snapshots: refs are assigned fresh, in DOM order, on every dom_snapshot, and stay valid only until the next snapshot or a navigation on that tab. An error like "unknown ref s5 — take a new snapshot" means exactly what it says: snapshot again and use the refs that one returns.
+DOM interaction goes through snapshot refs. Take dom_snapshot first: it returns a11y-tree YAML in which every interactive element carries a [ref=sN] id. Pass that ref to dom_click, dom_type, dom_select_option, dom_set_checked or dom_press; dom_select_option accepts the <select>'s ref or any of its option refs. The snapshot shows live state — checkboxes and radios carry checked=true/false (radios also their group= name), options carry value= and selected=, textboxes carry value= with the text currently in the field — so you can pick the right element and verify states after acting. Never guess a ref, and never reuse a ref across snapshots: refs are assigned fresh, in DOM order, on every dom_snapshot, and stay valid only until the next snapshot or a navigation on that tab. An error like "unknown ref s5 — take a new snapshot" means exactly what it says: snapshot again and use the refs that one returns.
 
-Typical loop: tabs_list to find the tab, dom_snapshot, dom_type into a field, dom_click a button, then page_text or console_logs to verify what actually happened. A click that returns ok tells you the element was clicked, not what the page did with it — verify after acting.
+Typical loop: tabs_list to find the tab, dom_snapshot, dom_type into a field (mode "replace" to overwrite instead of append), dom_select_option for a native <select>, dom_set_checked for checkboxes and radios (radios cannot be unchecked — pick a sibling), dom_press for keys, then page_text or a fresh dom_snapshot to verify what actually happened. Synthesized key events never trigger browser default actions — no native submit-on-Enter, caret movement or shortcut activation — so dom_press reports which path fired for Enter ("requestSubmit" means the form fallback submitted, "keys" means only the events went out); when you need a real default action, prefer dom_click on the page's own button. A click that returns ok tells you the element was clicked, not what the page did with it — verify after acting.
 
 ## Waiting
 
